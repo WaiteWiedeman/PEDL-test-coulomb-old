@@ -29,20 +29,6 @@ function [xTrain,yTrain,layers,options] = train_dnn_model(sampleFile, trainParam
     xTrain = xTrain';
     yTrain = yTrain';
 
-    % Split test and validation data
-    xdata = xTrain;
-    ydata = yTrain;
-    training_percent = 0.9;
-    size = length(xTrain);
-    indices = randperm(size);
-    num_train = round(size*training_percent);
-    train_indices = indices(1:num_train);
-    test_indices = indices(num_train+1:end);
-    xTrain = xdata(train_indices,:);
-    yTrain = ydata(train_indices,:);
-    xVal = xdata(test_indices,:);
-    yVal = ydata(test_indices,:);
-
     % Create neural network
     numStates = 6;
     layers = [
@@ -54,7 +40,7 @@ function [xTrain,yTrain,layers,options] = train_dnn_model(sampleFile, trainParam
         layers = [
             layers
             fullyConnectedLayer(trainParams.numNeurons)
-            reluLayer
+            tanhLayer
         ];
     end
     layers = [
@@ -65,7 +51,7 @@ function [xTrain,yTrain,layers,options] = train_dnn_model(sampleFile, trainParam
         layers = [
             layers
             fullyConnectedLayer(trainParams.numNeurons)
-            reluLayer
+            tanhLayer
         ];
     end
     
@@ -85,6 +71,8 @@ function [xTrain,yTrain,layers,options] = train_dnn_model(sampleFile, trainParam
         Shuffle = "every-epoch", ...
         Plots = "training-progress", ...
         Verbose = false, ...
-        ValidationData={xVal,yVal});
+        LearnRateSchedule = "piecewise", ...
+        LearnRateDropFactor = trainParams.LearnRateDropFactor, ...
+        LearnRateDropPeriod = floor(trainParams.numEpochs/4));
 end
     

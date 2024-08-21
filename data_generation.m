@@ -8,16 +8,16 @@ clc;
 sysParams = params_system();
 ctrlParams = params_control();
 trainParams = params_training();
-trainParams.numSamples = 300;
+trainParams.numSamples = 1000;
 if ~exist("\data\", 'dir')
     mkdir("data");
 end
 dataFile = "trainingSamples.mat";
-tSpan = 0:0.003:5;
-F1Range = 10;
+tSpan = 0:0.002:5; % [0,5]
+F1Range = 15;
 % simulate and save data
 samples = cell(trainParams.numSamples,1);
-f1Min = max(10, sysParams.fc_max);
+f1Min = max(5, sysParams.fc_max);
 for i = 1:trainParams.numSamples
     disp("generate data for " + num2str(i) + "th sample.");
     % random max force F1 for each sample in a varying range of 10N

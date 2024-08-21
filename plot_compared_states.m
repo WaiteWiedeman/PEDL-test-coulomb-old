@@ -1,4 +1,5 @@
-function plot_compared_states(t,x,tp,xp)
+% plot comparison
+function plot_compared_states(t,x,tp,xp,titletext)
     labels= ["$q_1$","$q_2$","$\dot{q}_1$","$\dot{q}_2$","$\ddot{q}_1$","$\ddot{q}_2$"];
     figure('Position',[500,100,800,800]);
     tiledlayout("vertical","TileSpacing","tight")
@@ -18,4 +19,5 @@ function plot_compared_states(t,x,tp,xp)
         end
     end 
     legend("Reference","Prediction","Location","eastoutside","FontName","Arial");
+    sgtitle(titletext);
 end

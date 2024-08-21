@@ -1,4 +1,4 @@
-function modelFile = train_pinn_model(sampleFile, trainParams)
+function output = train_pinn_model(sampleFile, trainParams,sysParams,ctrlParams,monitor)
 % PINN
 % A physics-Informed Neural Network (PINN) is a type of neural network
 % architecture desigend to incorporate physical principles or equations
@@ -11,32 +11,37 @@ function modelFile = train_pinn_model(sampleFile, trainParams)
 % https://en.wikipedia.org/wiki/Physics-informed_neural_networks 
 % https://benmoseley.blog/my-research/so-what-is-a-physics-informed-neural-network/
     
+    %initialize output
+    output.trainedNet = [];
+    output.executionEnvironment = "auto";
+
     % load samples and prepare training dataset
     ds = load(sampleFile);
-    numSamples = length(ds.samples);    
-    modelFile = "model\"+trainParams.type+"_"+num2str(trainParams.alpha)+"_"+num2str(numSamples)+".mat";
+    numSamples = trainParams.numSamples;    
     
-    %% generate data
+    % generate data
     % Feature data: 6-D initial state x0 + time interval
     % the label data is a predicted state x=[q1,q2,q1dot,q2dot,q1ddot,q2ddot]
-    initTimes = 1:0.5:4; %start from 1 sec to 4 sec with 0.5 sec step 
+    initTimes = 1:4; %start from 1 sec to 4 sec with 0.5 sec step 
+    tTrain = [];
     xTrain = [];
     yTrain = [];
     for i = 1:numSamples
         data = load(ds.samples{i,1}).state;
         t = data(1,:);
-        x = data(2:7, :); % q1,q2,q1_dot,q2_dot,q1_ddot,q2_ddot
+        x = data(2:7, :); % q1,q2,q1d,q2d,q1dd,q2dd
         for tInit = initTimes
-            initIdx = find(t >= tInit, 1, 'first');
+            initIdx = find(t > tInit, 1, 'first');
             x0 = x(:, initIdx); % Initial state 
             t0 = t(initIdx); % Start time
             for j = initIdx+1 : length(t)
-                xTrain = [xTrain, [x0; t(j)-t0]];
+                tTrain = [tTrain, t(j)-t0];
+                xTrain = [xTrain, x0];
                 yTrain = [yTrain, x(:,j)];
             end
         end
     end
-    disp(num2str(length(xTrain)) + " samples are generated for training.");
+    %disp(num2str(length(xTrain)) + " samples are generated for training.");
     
     % Create neural network
     numStates = 6;
@@ -49,18 +54,20 @@ function modelFile = train_pinn_model(sampleFile, trainParams)
         layers = [
             layers
             fullyConnectedLayer(trainParams.numNeurons)
-            reluLayer
+            tanhLayer
         ];
     end
-    layers = [
-        layers
-        dropoutLayer(trainParams.dropoutFactor)
+    if trainParams.dropoutFactor > 0
+        layers = [
+            layers
+            dropoutLayer(trainParams.dropoutFactor)
         ];
+    end
     for i = numMiddle+1:trainParams.numLayers
         layers = [
             layers
             fullyConnectedLayer(trainParams.numNeurons)
-            reluLayer
+            tanhLayer
         ];
     end
     
@@ -71,20 +78,40 @@ function modelFile = train_pinn_model(sampleFile, trainParams)
 
     % convert the layer array to a dlnetwork object
     net = dlnetwork(layers);
+    net = dlupdate(@double, net);
     % plot(net)
     
     % training options
-    monitor = trainingProgressMonitor;
     monitor.Metrics = "Loss";
-    monitor.Info = ["LearnRate", "IterationPerEpoch", "MaximumIteration", "Epoch", "Iteration"];
-    monitor.XLabel = "Epoch";
+    monitor.Info = ["LearnRate" ... 
+                    "IterationPerEpoch" ...
+                    "MaximumIteration" ...
+                    "Epoch" ...
+                    "Iteration" ...
+                    "GradientsNorm"...
+                    "StepNorm"...
+                    "TestAccuracy"];
+    monitor.XLabel = "Iteration";
     
+    net = train_adam_update(net, tTrain, xTrain, yTrain, trainParams, monitor);
+    output.trainedNet = net;
+
+    updateInfo(monitor,...
+        TestAccuracy=Pinn_test(net, sysParams, ctrlParams, trainParams))
+end
+
+%
+function net = train_adam_update(net, tTrain, xTrain, yTrain, trainParams, monitor)
     % using stochastic gradient decent
     miniBatchSize = trainParams.miniBatchSize;
     lrRate = trainParams.learningRate;
-    dataSize = size(yTrain,2);
+    learnRatedrop = trainParams.LearnRateDropFactor;
+    dataSize = length(tTrain);
     numBatches = floor(dataSize/miniBatchSize);
     numIterations = trainParams.numEpochs * numBatches;
+    learnRateDropPeriod = floor(trainParams.numEpochs/3);
+
+    accFcn = dlaccelerate(@modelLoss);
     
     avgGrad = [];
     avgSqGrad = [];
@@ -94,22 +121,25 @@ function modelFile = train_pinn_model(sampleFile, trainParams)
         epoch = epoch + 1;
         % Shuffle data.
         idx = randperm(dataSize);
-        xTrain = xTrain(:, idx);
-        yTrain = yTrain(:, idx);
+        tAll = tTrain(:, idx);
+        XAll = xTrain(:, idx);
+        YAll = yTrain(:, idx);
         for j = 1 : numBatches
             iter = iter + 1;
             startIdx = (j-1)*miniBatchSize + 1;
             endIdx = min(j*miniBatchSize, dataSize);
-            xBatch = xTrain(:, startIdx:endIdx);
-            yBatch = yTrain(:, startIdx:endIdx); 
+            tBatch = tAll(:, startIdx:endIdx);
+            xBatch = XAll(:, startIdx:endIdx);
+            yBatch = YAll(:, startIdx:endIdx); 
+            T = gpuArray(dlarray(tBatch, "CB"));
             X = gpuArray(dlarray(xBatch, "CB"));
-            T = gpuArray(dlarray(yBatch, "CB"));
+            Y = gpuArray(dlarray(yBatch, "CB"));
             % Evaluate the model loss and gradients using dlfeval and the
             % modelLoss function.
-            [loss, gradients] = dlfeval(@modelLoss, net, X, T);
+            [loss, gradients] = dlfeval(accFcn, net, T, X, Y);
     
             % Update the network parameters using the ADAM optimizer.
-            [net, avgGrad, avgSqGrad] = adamupdate(net, gradients, avgGrad,avgSqGrad,iter,lrRate);
+            [net, avgGrad, avgSqGrad] = adamupdate(net, gradients, avgGrad, avgSqGrad, iter, lrRate);
     
             recordMetrics(monitor, iter, Loss=loss);
     
@@ -123,38 +153,34 @@ function modelFile = train_pinn_model(sampleFile, trainParams)
                     IterationPerEpoch = numBatches);
             end
         end
+        if mod(epoch,learnRateDropPeriod) == 0
+            lrRate = lrRate*learnRatedrop;
+        end
     end
-    save(modelFile, 'net');
-
 end
 
-%% loss function
-function [loss, gradients, state] = modelLoss(net, X, T)
+% loss function
+function [loss, gradients] = modelLoss(net, T, X, Y)
     % make prediction
-    [Y, state] = forward(net, X);
-    dataLoss = l2loss(Y, T);
-    % dataLoss = mean((Y-T).^2, 'all');
-   
+    [Z, ~] = forward(net, [X;T]);
+    dataLoss = mse(Z, Y);
+
     % compute gradients using automatic differentiation
-    q1 = Y(1,:);
-    q2 = Y(2,:);
-    q1d = Y(3,:);
-    q2d = Y(4,:);
-    q1dX = dlgradient(sum(q1d, 'all'), X);
-    q2dX = dlgradient(sum(q2d, 'all'), X);
-    % q1X = dlgradient(sum(q1, 'all'), X);
-    % q2X = dlgradient(sum(q2, 'all'), X);
-    % q1d = q1X(7, :);
-    % q2d = q2X(7, :);
-    q1dd = q1dX(7, :);
-    q2dd = q2dX(7, :);
-    fT = physics_law(T(1:2, :), T(3:4, :), T(5:6, :));
-    fY = physics_law([q1; q2], [q1d; q2d], [q1dd; q2dd]);
-    physicLoss = l2loss(fY, fT);
-    % physicLoss = mean((fY-fT).^2, 'all');
+    q1 = Z(1,:);
+    q2 = Z(2,:);
+    q1d = Z(3,:);
+    q2d = Z(4,:);
+    q1dd = dlgradient(sum(q1d, 'all'), T);
+    q2dd = dlgradient(sum(q2d, 'all'), T);
+    % q1d = dlgradient(sum(q1, 'all'), T);
+    % q2d = dlgradient(sum(q2, 'all'), T);
+    
+    f = physics_law([q1;q2], [q1d;q2d], [q1dd;q2dd]);
+    fTarget = physics_law(Y(1:2,:),Y(3:4,:),Y(5:6,:));
+    physicLoss = mse(f, fTarget);
     
     % total loss
-    global trainParams
-    loss = (1.0-trainParams.alpha)*dataLoss + trainParams.alpha*physicLoss;
+    trainParams = params_training();
+    loss = (1.0-trainParams.alpha)*dataLoss + trainParams.alpha*(physicLoss);
     gradients = dlgradient(loss, net.Learnables);
 end
