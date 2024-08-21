@@ -1,12 +1,11 @@
-function modelFile = train_lstm_model(sampleFile, trainParams)
-%% train a LSTM-based model
+function [dsTrain,layers,options] = train_lstm_model(sampleFile, trainParams)
+% train a LSTM-based model
     ds = load(sampleFile);
-    numSamples = length(ds.samples);    
-    modelFile = "model\"+trainParams.type+"_"+num2str(trainParams.alpha)+"_"+num2str(numSamples)+".mat";
+    numSamples = trainParams.numSamples;    
 
-    %% preprocess data for training
+    % preprocess data for training
     % Refer to the Help "Import Data into Deep Network Designer / Sequences and time series" 
-    initTimes = 1:0.5:4; %start from 1 sec to 4 sec with 0.5 sec step 
+    initTimes = 1:4; %start from 1 sec to 4 sec with 0.5 sec step 
     states = {};
     times = [];
     labels = [];
@@ -26,16 +25,23 @@ function modelFile = train_lstm_model(sampleFile, trainParams)
             end
         end
     end
-    disp(num2str(length(times)) + " samples are generated for training.");
+    % disp(num2str(length(times)) + " samples are generated for training.");
     states = reshape(states, [], 1);
     times = times';
     labels = labels';
-    
+
+    % combine a datastore for training
+    miniBatchSize = trainParams.miniBatchSize;
+    dsState = arrayDatastore(states,'OutputType',"same",'ReadSize',miniBatchSize);
+    dsTime = arrayDatastore(times,'ReadSize',miniBatchSize);
+    dsLabel = arrayDatastore(labels,'ReadSize',miniBatchSize);
+    dsTrain = combine(dsState, dsTime, dsLabel);
+
     % Create neural network
     numStates = 6;
     layers = [
         sequenceInputLayer(numStates+1)
-        lstmLayer(32, OutputMode = "last")
+        lstmLayer(trainParams.HiddenState, OutputMode = "last")
         concatenationLayer(1, 2, Name = "cat")
         ];
     
@@ -44,7 +50,7 @@ function modelFile = train_lstm_model(sampleFile, trainParams)
         layers = [
             layers
             fullyConnectedLayer(trainParams.numNeurons)
-            reluLayer
+            tanhLayer
         ];
     end
     layers = [
@@ -55,7 +61,7 @@ function modelFile = train_lstm_model(sampleFile, trainParams)
         layers = [
             layers
             fullyConnectedLayer(trainParams.numNeurons)
-            reluLayer
+            tanhLayer
         ];
     end
     
@@ -65,29 +71,20 @@ function modelFile = train_lstm_model(sampleFile, trainParams)
         weightedLossLayer("mse")
        ];
     
-    lgraph = layerGraph(layers);
-    lgraph = addLayers(lgraph,[...
+    layers = layerGraph(layers);
+    layers = addLayers(layers,[...
         featureInputLayer(1, Name = "time")]);
-    lgraph = connectLayers(lgraph, "time", "cat/in2");
+    layers = connectLayers(layers, "time", "cat/in2");
     % plot(lgraph);
 
-    % combine a datastore for training
-    dsState = arrayDatastore(states, "OutputType", "same", "ReadSize", trainParams.miniBatchSize);
-    dsTime = arrayDatastore(times, "ReadSize", trainParams.miniBatchSize);
-    dsLabel = arrayDatastore(labels,"ReadSize", trainParams.miniBatchSize);
-    dsTrain = combine(dsState, dsTime, dsLabel);
-    % read(dsTrain)
-    
     options = trainingOptions("adam", ...
         InitialLearnRate = trainParams.learningRate, ...
         MaxEpochs = trainParams.numEpochs, ...
-        MiniBatchSize = trainParams.miniBatchSize, ...
+        MiniBatchSize = miniBatchSize, ...
         SequencePaddingDirection = "left", ...
         Shuffle = "every-epoch", ...
         Plots = "training-progress", ...
-        Verbose = 1);
-    
-    % training with data store
-    [net,info] = trainNetwork(dsTrain, lgraph, options);
-    save(modelFile, 'net');
-    % disp(info)
+        Verbose = false, ...
+        LearnRateSchedule = "piecewise", ...
+        LearnRateDropFactor = trainParams.LearnRateDropFactor, ...
+        LearnRateDropPeriod = floor(trainParams.numEpochs/3));

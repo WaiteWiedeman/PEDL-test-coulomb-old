@@ -1,12 +1,13 @@
-function avgErr = evaluate_model(net, sysParams, ctrlParams, trainParams)
-    numCase = 40; % evaluate cases
+function avgErr = evaluate_model(modelFile, sysParams, ctrlParams, trainParams)
+    net = load(modelFile).net;
+    numCase = 30; % evaluate cases
     numTime = 60; % evaluate time points 
-    tSpan = 0:0.002:10; % evaluate time span
+    tSpan = 0:0.001:10; % evaluate time span
     predInterval = 10; % predict maximum time interval
     
     errs = zeros(6*numCase, numTime);
 
-    fRanges = linspace(0.5, 25, numCase);
+    fRanges = linspace(0.5, 15, numCase);
     refTime = linspace(1, 10, numTime); % reference time points
     for i = 1:numCase
         disp("evaluate "+num2str(i)+" th case.");
